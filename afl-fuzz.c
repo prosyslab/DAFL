@@ -247,7 +247,6 @@ struct queue_entry {
   u8  cal_failed,                     /* Calibration failed?              */
       trim_done,                      /* Trimmed?                         */
       was_fuzzed,                     /* Had any fuzzing done yet?        */
-      handled_in_cycle,               /* Was handled in current cycle?    */
       passed_det,                     /* Deterministic stages passed?     */
       has_new_cov,                    /* Triggers new coverage?           */
       var_behavior,                   /* Variable behavior?               */
@@ -267,18 +266,15 @@ struct queue_entry {
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
 
-  struct queue_entry *next;           /* Next element, if any             */
+  struct queue_entry *next,           /* Next element, if any             */
+                     *next_100;       /* 100 elements ahead               */
 
 };
 
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_cur, /* Current offset within the queue  */
-                          *queue_last;/* Lastly added to the queue        */
-static struct queue_entry*
-  first_unhandled;                    /* 1st unhandled item in the queue  */
-
-static struct queue_entry*
-  shortcut_per_100[1024];             /* 100*N entries (replace next_100) */
+                          *queue_top, /* Top of the list                  */
+                          *q_prev100; /* Previous 100 marker              */
 
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
@@ -801,56 +797,9 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 }
 
 
-/* Insert a test case to the queue, preserving the sorted order based on the
- * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
- * 'first_unhandled'. */
-static void sorted_insert_to_queue(struct queue_entry* q) {
-
-  if (!queue) shortcut_per_100[0] = queue = q;
-  else {
-    struct queue_entry* q_probe;
-    u32 is_inserted = 0, i = 0;
-    first_unhandled = NULL;
-
-    // Special case handling when we have to insert at the front.
-    if (queue->prox_score < q->prox_score) {
-      q->next = queue;
-      queue = q;
-      is_inserted = 1;
-    }
-
-    // Traverse through the list to (1) update 'shortcut_per_100', (2) update
-    // 'first_unhandled', and (3) insert 'q' at the proper position.
-    q_probe = queue;
-    while (q_probe) {
-
-      if ((i % 100 == 0) && (i / 100 < 1024)) {
-        shortcut_per_100[(i / 100)] = q_probe;
-      }
-
-      if (!first_unhandled && !q_probe->handled_in_cycle)
-        first_unhandled = q_probe;
-
-      if (!is_inserted) {
-        // If reached the end or found the proper position, insert there.
-        if (!q_probe->next || q_probe->next->prox_score < q->prox_score) {
-          q->next = q_probe->next;
-          q_probe->next = q;
-          is_inserted = 1;
-        }
-      }
-
-      q_probe = q_probe->next;
-      i++;
-
-    }
-  }
-
-}
-
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -858,43 +807,28 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
-  q->prox_score   = prox_score;
-  q->entry_id     = queued_paths;
 
   if (q->depth > max_depth) max_depth = q->depth;
 
-  sorted_insert_to_queue(q);
+  if (queue_top) {
 
-  queue_last = q;
+    queue_top->next = q;
+    queue_top = q;
+
+  } else q_prev100 = queue = queue_top = q;
+
   queued_paths++;
   pending_not_fuzzed++;
 
   cycles_wo_finds = 0;
 
-  last_path_time = get_cur_time();
-
-}
-
-/* Sort the queue based on the proximity score. Needed after the dry-run. */
-
-static void sort_queue(void) {
-
-  struct queue_entry *q_next, *q_cur;
-  u32 i;
-
-  // First, backup 'queue'. Then, reset 'queue' and 'shortcut_per_100'.
-  q_cur = queue;
-  queue = NULL;
-  for (i = 0; i < 1024; i++) shortcut_per_100[i] = NULL;
-
-  while (q_cur) {
-
-    q_next = q_cur->next;
-    q_cur->next = NULL; // To satisfy sorted_insert_to_queue()'s assumption
-    sorted_insert_to_queue(q_cur);
-    q_cur = q_next;
+  if (!(queued_paths % 100)) {
+    q_prev100->next_100 = q;
+    q_prev100 = q;
 
   }
+
+  last_path_time = get_cur_time();
 
 }
 
@@ -1591,9 +1525,7 @@ static void read_testcases(void) {
     if (!access(dfn, F_OK)) passed_det = 1;
     ck_free(dfn);
 
-    // Provide 0 as the proximity score and update later in calibrate_case(),
-    // and sort later after the dry-run phase.
-    add_to_queue(fn, st.st_size, passed_det, 0);
+    add_to_queue(fn, st.st_size, passed_det);
 
   }
 
@@ -3284,19 +3216,19 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    add_to_queue(fn, len, 0, prox_score);
+    add_to_queue(fn, len, 0);
 
     if (hnb == 2) {
-      queue_last->has_new_cov = 1;
+      queue_top->has_new_cov = 1;
       queued_with_cov++;
     }
 
-    queue_last->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+    queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
 
-    res = calibrate_case(argv, queue_last, mem, queue_cycle - 1, 0);
+    res = calibrate_case(argv, queue_top, mem, queue_cycle - 1, 0);
 
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
@@ -3441,6 +3373,39 @@ keep_as_crash:
   ck_free(fn);
 
   return keeping;
+
+}
+
+/* When resuming, try to find the queue position to start from. This makes sense
+   only when resuming, and when we can find the original fuzzer_stats. */
+
+static u32 find_start_position(void) {
+
+  static u8 tmp[4096]; /* Ought to be enough for anybody. */
+
+  u8  *fn, *off;
+  s32 fd, i;
+  u32 ret;
+
+  if (!resuming_fuzz) return 0;
+
+  if (in_place_resume) fn = alloc_printf("%s/fuzzer_stats", out_dir);
+  else fn = alloc_printf("%s/../fuzzer_stats", in_dir);
+
+  fd = open(fn, O_RDONLY);
+  ck_free(fn);
+
+  if (fd < 0) return 0;
+
+  i = read(fd, tmp, sizeof(tmp) - 1); (void)i; /* Ignore errors */
+  close(fd);
+
+  off = strstr(tmp, "cur_path          : ");
+  if (!off) return 0;
+
+  ret = atoi(off + 20);
+  if (ret >= queued_paths) ret = 0;
+  return ret;
 
 }
 
@@ -6688,7 +6653,7 @@ retry_splicing:
   if (use_splicing && splice_cycle++ < SPLICE_CYCLES &&
       queued_paths > 1 && queue_cur->len > 1) {
 
-    u32 idx, idx_div, split_at;
+    u32 tid, split_at;
     u8* new_buf;
     s32 f_diff, l_diff;
 
@@ -6703,28 +6668,23 @@ retry_splicing:
 
     /* Pick a random queue entry and find it. */
 
-    idx = UR(queued_paths);
+    do { tid = UR(queued_paths); } while (tid == current_entry);
 
-    idx_div = idx / 100;
-    if (idx_div < 1024) {
-      target = shortcut_per_100[idx_div];
-      idx -= idx_div * 100;
-    } else {
-      target = shortcut_per_100[1023];
-      idx -= idx_div * 1024;
-    }
+    splicing_with = tid;
+    target = queue;
 
-    while (idx--) target = target->next;
+    while (tid >= 100) { target = target->next_100; tid -= 100; }
+    while (tid--) target = target->next;
 
-    /* Make sure that the target has a reasonable length and isn't yourself. */
+
+    /* Make sure that the target has a reasonable length. */
 
     while (target && (target->len < 2 || target == queue_cur)) {
       target = target->next;
+      splicing_with++;
     }
 
     if (!target) goto retry_splicing;
-
-    splicing_with = target->entry_id;
 
     /* Read the testcase into a new buffer. */
 
@@ -7884,7 +7844,7 @@ int main(int argc, char** argv) {
 
   s32 opt;
   u64 prev_queued = 0;
-  u32 sync_interval_cnt = 0;
+  u32 sync_interval_cnt = 0, seek_to;
   u8  *extras_dir = 0;
   u8  mem_limit_given = 0;
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
@@ -8181,9 +8141,9 @@ int main(int argc, char** argv) {
 
   cull_queue();
 
-  sort_queue();
-
   show_init_stats();
+
+  seek_to = find_start_position();
 
   write_stats_file(0, 0, 0);
   save_auto();
@@ -8207,11 +8167,15 @@ int main(int argc, char** argv) {
     if (!queue_cur) {
 
       queue_cycle++;
+      current_entry     = 0;
       cur_skipped_paths = 0;
       queue_cur = queue;
 
-      for (struct queue_entry* q_tmp = queue; q_tmp; q_tmp = q_tmp->next)
-        q_tmp->handled_in_cycle = 0;
+      while (seek_to) {
+        current_entry++;
+        seek_to--;
+        queue_cur = queue_cur->next;
+      }
 
       show_stats();
 
@@ -8236,10 +8200,6 @@ int main(int argc, char** argv) {
 
     }
 
-    /* Note that even if we skip the current item, it's considered "handled". */
-    queue_cur->handled_in_cycle = 1;
-    current_entry = queue_cur->entry_id;
-
     skipped_fuzz = fuzz_one(use_argv);
 
     if (!stop_soon && sync_id && !skipped_fuzz) {
@@ -8253,13 +8213,9 @@ int main(int argc, char** argv) {
 
     if (stop_soon) break;
 
-    if (first_unhandled) { // This is set only when a new item was added.
-      queue_cur = first_unhandled;
-      first_unhandled = NULL;
-    } else { // Proceed to the next unhandled item in the queue.
-      while (queue_cur && queue_cur->handled_in_cycle)
-        queue_cur = queue_cur->next;
-    }
+    queue_cur = queue_cur->next;
+    current_entry++;
+
   }
 
   if (queue_cur) show_stats();
