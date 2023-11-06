@@ -119,27 +119,26 @@ bool AFLCoverage::runOnModule(Module &M) {
         CallInst *Call = IRB.CreateCall(Fun, Args, "");
         Call->setCallingConv(CallingConv::C);
         Call->setTailCall(true);
-
         is_first_BB = false;
       }
 
-      for (auto &inst : BB) {
-        DebugLoc dbg = inst.getDebugLoc();
-        DILocation* DILoc = dbg.get();
-        if (DILoc && DILoc->getLine()) {
-          std::string line_str = std::to_string(DILoc->getLine());
-          std::string line_msg = std::string("[LINE] ") + file_name + std::string(":") + line_str;
+      // for (auto &inst : BB) {
+      //   DebugLoc dbg = inst.getDebugLoc();
+      //   DILocation* DILoc = dbg.get();
+      //   if (DILoc && DILoc->getLine()) {
+      //     std::string line_str = std::to_string(DILoc->getLine());
+      //     std::string line_msg = std::string("[LINE] ") + file_name + std::string(":") + line_str;
 
-          IRBuilder<> IRB(&(inst));
-          std::vector<Value *> Args;
-          Value *Str = IRB.CreateGlobalStringPtr(line_msg.c_str());
-          Args.push_back(Str);
-          Function *Fun = getCoverageFunction(M);
-          CallInst *Call = IRB.CreateCall(Fun, Args, "");
-          Call->setCallingConv(CallingConv::C);
-          Call->setTailCall(true);
-        }
-      }
+      //     IRBuilder<> IRB(&(inst));
+      //     std::vector<Value *> Args;
+      //     Value *Str = IRB.CreateGlobalStringPtr(line_msg.c_str());
+      //     Args.push_back(Str);
+      //     Function *Fun = getCoverageFunction(M);
+      //     CallInst *Call = IRB.CreateCall(Fun, Args, "");
+      //     Call->setCallingConv(CallingConv::C);
+      //     Call->setTailCall(true);
+      //   }
+      // }
     }
   }
 
