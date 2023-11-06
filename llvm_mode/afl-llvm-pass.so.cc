@@ -97,7 +97,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   std::string file_name = M.getSourceFileName();
   std::size_t tokloc = file_name.find_last_of('/');
-  bool is_first_BB;
+  bool is_first_BB, is_first_inst;
   if (tokloc != std::string::npos) {
     file_name = file_name.substr(tokloc + 1, std::string::npos);
   }
@@ -122,23 +122,30 @@ bool AFLCoverage::runOnModule(Module &M) {
         is_first_BB = false;
       }
 
-      // for (auto &inst : BB) {
-      //   DebugLoc dbg = inst.getDebugLoc();
-      //   DILocation* DILoc = dbg.get();
-      //   if (DILoc && DILoc->getLine()) {
-      //     std::string line_str = std::to_string(DILoc->getLine());
-      //     std::string line_msg = std::string("[LINE] ") + file_name + std::string(":") + line_str;
+      is_first_inst = true;
+      for (auto &inst : BB) {
+        // Insert line coverage
+        if (is_first_inst)
+          is_first_inst = false;
+        else
+          break;
+        
+        DebugLoc dbg = inst.getDebugLoc();
+        DILocation* DILoc = dbg.get();
+        if (DILoc && DILoc->getLine()) {
+          std::string line_str = std::to_string(DILoc->getLine());
+          std::string line_msg = std::string("[LINE] ") + file_name + std::string(":") + line_str;
 
-      //     IRBuilder<> IRB(&(inst));
-      //     std::vector<Value *> Args;
-      //     Value *Str = IRB.CreateGlobalStringPtr(line_msg.c_str());
-      //     Args.push_back(Str);
-      //     Function *Fun = getCoverageFunction(M);
-      //     CallInst *Call = IRB.CreateCall(Fun, Args, "");
-      //     Call->setCallingConv(CallingConv::C);
-      //     Call->setTailCall(true);
-      //   }
-      // }
+          IRBuilder<> IRB(&(inst));
+          std::vector<Value *> Args;
+          Value *Str = IRB.CreateGlobalStringPtr(line_msg.c_str());
+          Args.push_back(Str);
+          Function *Fun = getCoverageFunction(M);
+          CallInst *Call = IRB.CreateCall(Fun, Args, "");
+          Call->setCallingConv(CallingConv::C);
+          Call->setTailCall(true);
+        }
+      }
     }
   }
 
