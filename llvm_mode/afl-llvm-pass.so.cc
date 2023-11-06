@@ -54,13 +54,6 @@
 
 using namespace llvm;
 
-bool selective_coverage = false;
-bool dfg_scoring = false;
-bool no_filename_match = false;
-std::set<std::string> instr_targets;
-std::map<std::string,std::pair<unsigned int,unsigned int>> dfg_node_map;
-
-
 namespace {
 
   class AFLCoverage : public ModulePass {
@@ -80,211 +73,77 @@ namespace {
 
 }
 
-
-void initCoverageTarget(char* select_file) {
-  std::string line;
-  std::ifstream stream(select_file);
-
-  while (std::getline(stream, line))
-    instr_targets.insert(line);
-}
-
-
-void initDFGNodeMap(char* dfg_file) {
-  unsigned int idx = 0;
-  std::string line;
-  std::ifstream stream(dfg_file);
-
-  while (std::getline(stream, line)) {
-    std::size_t space_idx = line.find(" ");
-    std::string score_str = line.substr(0, space_idx);
-    std::string targ_line = line.substr(space_idx + 1, std::string::npos);
-    int score = stoi(score_str);
-    dfg_node_map[targ_line] = std::make_pair(idx++, (unsigned int) score);
-    if (idx >= DFG_MAP_SIZE) {
-      std::cout << "Input DFG is too large (check DFG_MAP_SIZE)" << std::endl;
-      exit(1);
-    }
-  }
-}
-
-
-void initialize(void) {
-  char* select_file = getenv("DAFL_SELECTIVE_COV");
-  char* dfg_file = getenv("DAFL_DFG_SCORE");
-
-  if (select_file) {
-    selective_coverage = true;
-    initCoverageTarget(select_file);
-  }
-
-  if (dfg_file) {
-    dfg_scoring = true;
-    initDFGNodeMap(dfg_file);
-  }
-
-  if (getenv("DAFL_NO_FILENAME_MATCH")) no_filename_match = true;
-}
-
-
 char AFLCoverage::ID = 0;
+static const char *CoverageFunctionName = "puts";
 
+
+Function *getCoverageFunction(Module &M) {
+  LLVMContext &Ctx = M.getContext();
+  Type* StringType = Type::getInt8PtrTy(Ctx);
+  Type* ArgsTypes[] = {StringType};
+  FunctionType *FType = FunctionType::get(Type::getInt32Ty(Ctx), ArgsTypes, false);
+  Value *Coverage = dyn_cast<Value>(M.getOrInsertFunction(CoverageFunctionName, FType).getCallee());
+  if (Function *F = dyn_cast<Function>(Coverage)) {
+    return F;
+  } else {
+    errs() << "WARN: invalid function\n";
+    return NULL;
+  }
+
+  return NULL;
+}
 
 bool AFLCoverage::runOnModule(Module &M) {
 
-  LLVMContext &C = M.getContext();
-
-  IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
-  IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
-
-  initialize();
-
-  /* Get globals for the SHM region and the previous location. Note that
-     __afl_prev_loc is thread-local. */
-
-  GlobalVariable *AFLMapPtr =
-      new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
-                         GlobalValue::ExternalLinkage, 0, "__afl_area_ptr");
-
-  GlobalVariable *AFLMapDFGPtr =
-      new GlobalVariable(M, PointerType::get(Int32Ty, 0), false,
-                         GlobalValue::ExternalLinkage, 0, "__afl_area_dfg_ptr");
-
-  GlobalVariable *AFLPrevLoc = new GlobalVariable(
-      M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
-      0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
-
-  /* Instrument all the things! */
-
-  int inst_blocks = 0;
-  int skip_blocks = 0;
-  int inst_dfg_nodes = 0;
   std::string file_name = M.getSourceFileName();
-  std::set<std::string> covered_targets;
-
   std::size_t tokloc = file_name.find_last_of('/');
+  bool is_first_BB;
   if (tokloc != std::string::npos) {
     file_name = file_name.substr(tokloc + 1, std::string::npos);
   }
 
   for (auto &F : M) {
-    bool is_inst_targ = false;
     const std::string func_name = F.getName().str();
-    std::set<std::string>::iterator it;
-
-    /* Check if this function is our instrumentation target. */
-    if (selective_coverage) {
-      for (it = instr_targets.begin(); it != instr_targets.end(); ++it) {
-        std::size_t colon = (*it).find(":");
-        std::string target_file = (*it).substr(0, colon);
-        std::string target_func = (*it).substr(colon + 1, std::string::npos);
-
-        if (no_filename_match || file_name.compare(target_file) == 0) {
-          if (func_name.compare(target_func) == 0) {
-            is_inst_targ = true;
-            covered_targets.insert(*it);
-            break;
-          }
-        }
-      }
-    } else is_inst_targ = true; // If disabled, instrument all the blocks.
-
-    /* Now iterate through the basic blocks of the function. */
+    std::string msg = std::string("[FUNCTION] ") + file_name + std::string(":") + func_name;
+    is_first_BB = true;
 
     for (auto &BB : F) {
-      bool is_dfg_node = false;
-      unsigned int node_idx = 0;
-      unsigned int node_score = 0;
+      // Insert function coverage
+      if( is_first_BB ) {
+        BasicBlock::iterator IP = BB.getFirstInsertionPt();
+        IRBuilder<> IRB(&(*IP));
+        std::vector<Value *> Args;
+        Value *Str = IRB.CreateGlobalStringPtr(msg.c_str());
+        Args.push_back(Str);
+        Function *Fun = getCoverageFunction(M);
+        CallInst *Call = IRB.CreateCall(Fun, Args, "");
+        Call->setCallingConv(CallingConv::C);
+        Call->setTailCall(true);
 
-      if (is_inst_targ) {
-        inst_blocks++;
+        is_first_BB = false;
       }
-      else {
-        skip_blocks++;
-        continue;
-      }
 
-      /* Iterate through the instructions in the basic block to check if this
-       * block is a DFG node. If so, retrieve its proximity score. */
+      for (auto &inst : BB) {
+        DebugLoc dbg = inst.getDebugLoc();
+        DILocation* DILoc = dbg.get();
+        if (DILoc && DILoc->getLine()) {
+          std::string line_str = std::to_string(DILoc->getLine());
+          std::string line_msg = std::string("[LINE] ") + file_name + std::string(":") + line_str;
 
-      if (dfg_scoring) {
-        for (auto &inst : BB) {
-          DebugLoc dbg = inst.getDebugLoc();
-          DILocation* DILoc = dbg.get();
-          if (DILoc && DILoc->getLine()) {
-            int line_no = DILoc->getLine();
-            std::ostringstream stream;
-            stream << file_name << ":" << line_no;
-            std::string targ_str = stream.str();
-            if (dfg_node_map.count(targ_str) > 0) {
-              is_dfg_node = true;
-              auto node_info = dfg_node_map[targ_str];
-              node_idx = node_info.first;
-              node_score = node_info.second;
-              inst_dfg_nodes++;
-              break;
-            }
-          }
+          IRBuilder<> IRB(&(inst));
+          std::vector<Value *> Args;
+          Value *Str = IRB.CreateGlobalStringPtr(line_msg.c_str());
+          Args.push_back(Str);
+          Function *Fun = getCoverageFunction(M);
+          CallInst *Call = IRB.CreateCall(Fun, Args, "");
+          Call->setCallingConv(CallingConv::C);
+          Call->setTailCall(true);
         }
-      } // If disabled, we don't have to do anything here.
-
-      BasicBlock::iterator IP = BB.getFirstInsertionPt();
-      IRBuilder<> IRB(&(*IP));
-
-      /* Make up cur_loc */
-
-      unsigned int cur_loc = AFL_R(MAP_SIZE);
-
-      ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
-
-      /* Load prev_loc */
-
-      LoadInst *PrevLoc = IRB.CreateLoad(AFLPrevLoc);
-      PrevLoc->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      Value *PrevLocCasted = IRB.CreateZExt(PrevLoc, IRB.getInt32Ty());
-
-      /* Load SHM pointer */
-
-      LoadInst *MapPtr = IRB.CreateLoad(AFLMapPtr);
-      MapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      Value *MapPtrIdx =
-          IRB.CreateGEP(MapPtr, IRB.CreateXor(PrevLocCasted, CurLoc));
-
-      /* Update bitmap */
-
-      LoadInst *Counter = IRB.CreateLoad(MapPtrIdx);
-      Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      Value *Incr = IRB.CreateAdd(Counter, ConstantInt::get(Int8Ty, 1));
-      IRB.CreateStore(Incr, MapPtrIdx)
-          ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-
-      /* Set prev_loc to cur_loc >> 1 */
-
-      StoreInst *Store =
-          IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
-      Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-
-      if (is_dfg_node) {
-        /* Update DFG coverage map. */
-        LoadInst *DFGMap = IRB.CreateLoad(AFLMapDFGPtr);
-        DFGMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-        ConstantInt * Idx = ConstantInt::get(Int32Ty, node_idx);
-        ConstantInt * Score = ConstantInt::get(Int32Ty, node_score);
-        Value *DFGMapPtrIdx = IRB.CreateGEP(DFGMap, Idx);
-        IRB.CreateStore(Score, DFGMapPtrIdx)
-            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       }
     }
   }
 
-  /* Say something nice. */
-  for (auto it = covered_targets.begin(); it != covered_targets.end(); ++it)
-    std::cout << "Covered " << (*it) << std::endl;
-  OKF("Selected blocks: %u, skipped blocks: %u. instrumented DFG nodes: %u",
-      inst_blocks, skip_blocks, inst_dfg_nodes);
-
   return true;
-
 }
 
 
