@@ -74,13 +74,15 @@ namespace {
 }
 
 char AFLCoverage::ID = 0;
-static const char *CoverageFunctionName = "puts";
+static const char *CoverageFunctionName = "fputs";
+static const char *CoverageFile = "stderr";
 
 
 Function *getCoverageFunction(Module &M) {
   LLVMContext &Ctx = M.getContext();
   Type* StringType = Type::getInt8PtrTy(Ctx);
-  Type* ArgsTypes[] = {StringType};
+  Type *FilePtrType = Type::getInt8PtrTy(Ctx);
+  Type *ArgsTypes[] = {StringType, FilePtrType};
   FunctionType *FType = FunctionType::get(Type::getInt32Ty(Ctx), ArgsTypes, false);
   Value *Coverage = dyn_cast<Value>(M.getOrInsertFunction(CoverageFunctionName, FType).getCallee());
   if (Function *F = dyn_cast<Function>(Coverage)) {
@@ -94,6 +96,7 @@ Function *getCoverageFunction(Module &M) {
 }
 
 bool AFLCoverage::runOnModule(Module &M) {
+  LLVMContext &Ctx = M.getContext();
 
   std::string file_name = M.getSourceFileName();
   std::size_t tokloc = file_name.find_last_of('/');
@@ -114,11 +117,14 @@ bool AFLCoverage::runOnModule(Module &M) {
         IRBuilder<> IRB(&(*IP));
         std::vector<Value *> Args;
         Value *Str = IRB.CreateGlobalStringPtr(msg.c_str());
+        Value *File = IRB.CreateGlobalStringPtr("/dev/stderr");
+        Value *Fptr = IRB.CreateBitOrPointerCast(File, Type::getInt8PtrTy(Ctx));
         Args.push_back(Str);
+        Args.push_back(Fptr);
         Function *Fun = getCoverageFunction(M);
         CallInst *Call = IRB.CreateCall(Fun, Args, "");
         Call->setCallingConv(CallingConv::C);
-        Call->setTailCall(true);
+        Call->setTailCall(false);
         is_first_BB = false;
       }
 
@@ -139,11 +145,14 @@ bool AFLCoverage::runOnModule(Module &M) {
           IRBuilder<> IRB(&(inst));
           std::vector<Value *> Args;
           Value *Str = IRB.CreateGlobalStringPtr(line_msg.c_str());
+          Value *File = IRB.CreateGlobalStringPtr("/dev/stderr");
+          Value *Fptr = IRB.CreateBitOrPointerCast(File, Type::getInt8PtrTy(Ctx));
           Args.push_back(Str);
+          Args.push_back(Fptr);
           Function *Fun = getCoverageFunction(M);
           CallInst *Call = IRB.CreateCall(Fun, Args, "");
           Call->setCallingConv(CallingConv::C);
-          Call->setTailCall(true);
+          Call->setTailCall(false);
         }
       }
     }
