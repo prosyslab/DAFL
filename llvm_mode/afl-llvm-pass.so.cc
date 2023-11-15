@@ -117,32 +117,17 @@ bool AFLCoverage::runOnModule(Module &M) {
   if (tokloc != std::string::npos) {
     file_name = file_name.substr(tokloc + 1, std::string::npos);
   }
-
-  bool is_target_file = false;
-  if (file_name.compare(target_file) == 0)
-    is_target_file = true;
-
-  bool is_first_BB;
+  if (file_name.compare(target_file) != 0)
+    return true;
 
   for (auto &F : M) {
     const std::string func_name = F.getName().str();
-    bool is_target_func = false;
     if (func_name.compare(target_func) == 0)
-      is_target_func = true;
-
-    // Consider only the target location
-    if (!is_target_file || !is_target_func)
       continue;
 
-
-    std::string msg = std::string("[FUNCTION] ") + file_name + std::string(":") + func_name;
-    // Add a prefix if the function is a target function
-    if(is_target_file && is_target_func)
-      msg = std::string("[TARGET] ") + msg;
-
-    msg = std::string("\n") + msg;
+    std::string msg = std::string("\n[FUNCTION] ") + file_name + std::string(":") + func_name;
       
-    is_first_BB = true;
+    bool is_first_BB = true;
     for (auto &BB : F) {
       // Insert function coverage
       if( is_first_BB ) {
@@ -162,11 +147,10 @@ bool AFLCoverage::runOnModule(Module &M) {
         DebugLoc dbg = inst.getDebugLoc();
         DILocation* DILoc = dbg.get();
 
-        if (DILoc && DILoc->getLine()) 
+        if (!DILoc || !DILoc->getLine()) 
           continue;  
 
         std::string line_str = std::to_string(DILoc->getLine());
-
         if (line_str.compare(target_line) != 0)
           continue;
         
