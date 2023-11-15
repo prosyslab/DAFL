@@ -126,11 +126,16 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   for (auto &F : M) {
     const std::string func_name = F.getName().str();
-    std::string msg = std::string("[FUNCTION] ") + file_name + std::string(":") + func_name;
-
     bool is_target_func = false;
     if (func_name.compare(target_func) == 0)
       is_target_func = true;
+
+    // Consider only the target location
+    if (!is_target_file || !is_target_func)
+      continue;
+
+
+    std::string msg = std::string("[FUNCTION] ") + file_name + std::string(":") + func_name;
     // Add a prefix if the function is a target function
     if(is_target_file && is_target_func)
       msg = std::string("[TARGET] ") + msg;
@@ -152,10 +157,6 @@ bool AFLCoverage::runOnModule(Module &M) {
         Call->setTailCall(true);
         is_first_BB = false;
       }
-
-      // Print only the target line coverage
-      if (!is_target_file || !is_target_func)
-        continue;
 
       for (auto &inst : BB) {
         DebugLoc dbg = inst.getDebugLoc();
