@@ -122,10 +122,12 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   for (auto &F : M) {
     const std::string func_name = F.getName().str();
-    if (func_name.compare(target_func) == 0)
-      continue;
 
-    std::string msg = std::string("\n[FUNCTION] ") + file_name + std::string(":") + func_name;
+    std::string msg = std::string("[FUNCTION] ") + file_name + std::string(":") + func_name;
+
+    if (func_name.compare(target_func) == 0)
+      msg = std::string("[TARGET] ") + msg;
+    msg = std::string("\n") + msg;
       
     bool is_first_BB = true;
     for (auto &BB : F) {
@@ -142,6 +144,9 @@ bool AFLCoverage::runOnModule(Module &M) {
         Call->setTailCall(true);
         is_first_BB = false;
       }
+
+      if (func_name.compare(target_func) != 0)
+        continue;
 
       for (auto &inst : BB) {
         DebugLoc dbg = inst.getDebugLoc();
