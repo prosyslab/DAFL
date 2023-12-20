@@ -117,9 +117,7 @@ bool AFLCoverage::runOnModule(Module &M) {
   if (tokloc != std::string::npos) {
     file_name = file_name.substr(tokloc + 1, std::string::npos);
   }
-  if (file_name.compare(target_file) != 0)
-    return true;
-
+  
   for (auto &F : M) {
     const std::string func_name = F.getName().str();
 
