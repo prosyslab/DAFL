@@ -205,11 +205,18 @@ bool AFLCoverage::runOnModule(Module &M) {
       unsigned int node_idx = 0;
       unsigned int node_score = 0;
 
+      BasicBlock::iterator IP = BB.getFirstInsertionPt();
+      IRBuilder<> IRB(&(*IP));
+
       if (is_inst_targ) {
         inst_blocks++;
       }
       else {
         skip_blocks++;
+        /* Set prev_loc to 0 to indicate that this block is uninstrumented. */
+        StoreInst *Store =
+            IRB.CreateStore(ConstantInt::get(Int32Ty, 0), AFLPrevLoc);
+        Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
         continue;
       }
 
@@ -236,9 +243,6 @@ bool AFLCoverage::runOnModule(Module &M) {
           }
         }
       } // If disabled, we don't have to do anything here.
-
-      BasicBlock::iterator IP = BB.getFirstInsertionPt();
-      IRBuilder<> IRB(&(*IP));
 
       /* Make up cur_loc */
 
